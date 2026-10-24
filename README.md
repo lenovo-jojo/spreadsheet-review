@@ -1,69 +1,74 @@
 # spreadsheet-review
 
-current iteration: **catalog transfer review**. other teams can adapt this repository for their own spreadsheet workflows; configurable team profiles are future work.
-
-a desktop workflow tool for extracting unique claimant records from catalog-transfer reports. originally developed with ai assistance in august 2026; source recovered and prepared for this portfolio in october 2026.
+a desktop tool that turns a catalog-transfer spreadsheet into a clean, deduplicated claimant table. drop a report on it and the table is on your clipboard and saved as csv.
 
 ## the problem
 
-a transfer report can repeat the same claimant across many catalog rows. the task is to extract claimant details only where the report marks the transfer answer yes, then remove duplicate administrator/publisher records.
+a transfer report can repeat the same claimant across many catalog rows. for each report, someone has to decide whether the transfer is full or partial, then copy out only the claimants on rows marked yes, without duplicates. doing that by hand is slow and error-prone.
+
+i'm on a three-person team that processes publishing catalog transfers. i built this for my own daily work; i estimate it took me from about 5 to about 20 transfers a day when needed (my own estimate, not a measured benchmark).
 
 ## what it does
 
 - reads the first worksheet of an `.xlsx` report.
-- accepts `YES`, `Yes`, `Y`, and `(Y)` in column e, ignoring surrounding whitespace and case.
-- checks all work answers in column e: all yes means **true full**, any no means **true partial**, and blanks are ignored. one workbook represents one application. unrecognized nonblank answers are flagged for review; they cannot establish a full transfer.
-- extracts columns r, q, n, m in this order: **admin, admin p#, publisher, publisher p#**. member fields are excluded from both clipboard and csv output.
-- preserves the first occurrence of each distinct six-field record.
-- writes a csv alongside the report and copies a tab-separated table to the clipboard.
-- reports unsupported files and reports with no matching rows.
+- classifies the whole report from the answer column: all yes → **true full**, any no → **true partial**, blanks ignored, anything unrecognized → **needs review** (with row numbers).
+- accepts `YES`, `Yes`, `Y`, and `(Y)`, ignoring case and spaces.
+- extracts four columns from yes rows (**admin, admin p#, publisher, publisher p#**) and keeps the first copy of each distinct row.
+- saves a csv next to the report, *then* copies a tab-separated table to the clipboard, so a failed save never overwrites your clipboard.
 
-## operational context and personal outcome
+## run it
 
-i am one of three people on a team processing publishing catalog transfers globally. hubspot automations and strict triage helped the team clear a backlog spanning several years; this tool helped us sustain that progress by simplifying repeated claimant extraction.
+**windows** (desktop excel required): extract the download and double-click `windows/Install Claimant Drop.cmd`. then right-click a report → send to → claimant drop. on windows 11, choose show more options first. a popup shows the classification and row counts.
 
-in personal workflow testing, i estimated that my daily processing capacity increased from roughly **5 to 20 transfers when needed**. this is a self-reported estimate of my capacity, not a controlled benchmark or a measured team-wide result. the tool was one part of a broader workflow improvement.
-
-## user workflow and design decisions
-
-double-click the windows installer after extracting the download. it installs into the current user app folder and automatically creates send to and desktop shortcuts. right-click one report → send to → mlc claimant drop (use show more options first if needed). the windows send to workflow launches the tool with one report. it copies a four-column table with headers, saves the same table as csv, and shows the transfer classification in the confirmation popup. no new browser interface is required for this workflow.
-
-the classification examines all work rows before filtering yes rows: a work marked no establishes a partial transfer regardless of what the application claimed. deduplication uses the four exported fields, so differences in member information do not duplicate the same administrator/publisher record. the csv is written before updating the clipboard, so a failed save does not replace the user's clipboard.
-
-## implementations
-
-the [macos source](src/claimants.swift) reads workbook xml using foundationxml. it resolves the first worksheet through workbook relationships, supports shared and inline strings, and handles csv quoting. the [windows version](windows/README.txt) uses desktop excel through powershell com automation.
+**macos:**
 
 ```sh
 swiftc src/claimants.swift -o claimants
 ./claimants /path/to/report.xlsx
 ```
 
-requires macos, swift command-line tools, and `/usr/bin/ditto`. windows requires desktop excel; its runtime has not been verified on windows during this portfolio pass. the optional `CLAIMANTS_NO_CLIPBOARD=1` environment variable disables clipboard writes for automated checks.
+the macos version reads the workbook xml directly with foundationxml (no excel needed). the windows version drives excel through powershell com automation.
 
-## verification
+## different report layouts
+
+column positions are configurable. copy [`claimant-columns.example.json`](claimant-columns.example.json) to `claimant-columns.json` next to the tool (or point `CLAIMANTS_COLUMNS` at it) and change the letters and headers:
+
+```json
+{
+  "answerColumn": "E",
+  "fields": [
+    { "header": "Admin", "column": "R" },
+    { "header": "Admin P#", "column": "Q" }
+  ]
+}
+```
+
+without a settings file, the defaults above (answers in e; r, q, n, m extracted) are used.
+
+## tests
+
+the tests build invented workbooks and check filtering, classification, deduplication, csv escaping, column settings, and error cases. no real report data is in this repository.
 
 ```sh
+# macos (also runs in github actions)
 swiftc src/claimants.swift -o /tmp/claimants
 CLAIMANTS_BINARY=/tmp/claimants python3 -m unittest discover -s tests -v
 ```
 
-tests use invented rows and check filtering, deduplication, worksheet relationship resolution, csv escaping, no-match errors, and unsupported extensions. no real catalog report, claimant data, or original data screenshot is included.
+```bat
+rem windows, with desktop excel
+set CLAIMANTS_BINARY=%CD%\tests\run_windows.cmd
+python -m unittest discover -s tests -v
+```
 
-## my role and ai assistance
+## limits
 
-i brought the catalog-transfer workflow and filtering requirements, iterated on the tool with ai assistance in codex, and worked toward a desktop drop-file workflow. ai helped generate implementation and packaging code. this portfolio documents that collaboration rather than claiming all code was handwritten.
+- the windows popup and send to shortcut are checked by hand, not by the automated tests.
+- formulas use the values excel last saved, with no recalculation.
+- not yet hardened for very large files, untrusted workbooks, or spreadsheet formula injection in the csv output.
 
-## sprints and epics
+## how it was built
 
-| work | status | scope and evidence |
-| --- | --- | --- |
-| [sprint 1 — portfolio foundation](https://github.com/lenovo-jojo/portfolio/milestone/1) | open, october 12–18, 2026 | this tool's [synthetic verification task](https://github.com/lenovo-jojo/portfolio/issues/3) is completed; the overall sprint remains open |
-| [epic — publish evidence-backed portfolio projects](https://github.com/lenovo-jojo/portfolio/issues/1) | completed | recovered source, documented behavior, and automated verification |
-| epic — validate partial and full transfers | implemented; windows runtime verification pending | confirmed work-level rules; classification before yes filtering; four-column export; synthetic classification and deduplication checks |
+i defined the workflow, rules, and output format, and confirmed the rules with the workflow owner. the code was written with ai assistance (codex), and i iterated on the behavior.
 
-business rules and output format were confirmed with the workflow owner. windows popup, clipboard, and send to execution still need verification on windows with desktop excel.
-
-## limits and next work
-
-the input schema uses fixed columns; a different report layout needs validation or configurable mapping. formula values use stored workbook values rather than recalculation. large-file behavior, untrusted workbook extraction, clipboard tab/newline handling, spreadsheet formula-injection protection, and windows compatibility deserve further work. no measured time-savings claim is made.
+© jojo. all rights reserved; see [license](LICENSE).

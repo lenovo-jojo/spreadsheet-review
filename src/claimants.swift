@@ -11,6 +11,62 @@ enum ClaimantError: LocalizedError {
     }
 }
 
+struct ColumnMapping {
+    let answerLetter: String
+    let answerColumn: Int
+    let headers: [String]
+    let columns: [Int]
+
+    static let standard = ColumnMapping(answerLetter: "E", answerColumn: 5,
+                                        headers: ["Admin", "Admin P#", "Publisher", "Publisher P#"],
+                                        columns: [18, 17, 14, 13])
+
+    static func columnNumber(_ letters: String) -> Int? {
+        let text = letters.trimmingCharacters(in: .whitespaces).uppercased()
+        guard !text.isEmpty else { return nil }
+        var number = 0
+        for scalar in text.unicodeScalars {
+            guard scalar.value >= 65 && scalar.value <= 90 else { return nil }
+            number = number * 26 + Int(scalar.value - 64)
+        }
+        return number
+    }
+
+    // CLAIMANTS_COLUMNS names a settings file; otherwise claimant-columns.json beside the tool is used if present.
+    static func load() throws -> ColumnMapping {
+        var settingsURL: URL?
+        if let path = ProcessInfo.processInfo.environment["CLAIMANTS_COLUMNS"], !path.isEmpty {
+            settingsURL = URL(fileURLWithPath: path)
+        } else if let beside = Bundle.main.executableURL?.deletingLastPathComponent().appendingPathComponent("claimant-columns.json"),
+                  FileManager.default.fileExists(atPath: beside.path) {
+            settingsURL = beside
+        }
+        guard let url = settingsURL else { return standard }
+        guard let data = try? Data(contentsOf: url) else {
+            throw ClaimantError.message("Could not read column settings: \(url.lastPathComponent).")
+        }
+        guard let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              let answerLetter = object["answerColumn"] as? String,
+              let answerColumn = columnNumber(answerLetter),
+              let fields = object["fields"] as? [[String: Any]], !fields.isEmpty else {
+            throw ClaimantError.message("Column settings need an answerColumn letter and at least one field.")
+        }
+        var headers: [String] = []
+        var columns: [Int] = []
+        for field in fields {
+            guard let header = field["header"] as? String,
+                  let letters = field["column"] as? String,
+                  let column = columnNumber(letters) else {
+                throw ClaimantError.message("Each column setting needs a header and a column letter.")
+            }
+            headers.append(header)
+            columns.append(column)
+        }
+        return ColumnMapping(answerLetter: answerLetter.uppercased(), answerColumn: answerColumn,
+                             headers: headers, columns: columns)
+    }
+}
+
 final class SharedStringsParser: NSObject, XMLParserDelegate {
     var strings: [String] = []
     private var inItem = false
@@ -67,9 +123,12 @@ final class SheetParser: NSObject, XMLParserDelegate {
     private var inlineBuffer = ""
     private var collectingValue = false
     private var collectingInlineText = false
-    private let wantedColumns: Set<Int> = [5, 13, 14, 17, 18]
+    private let wantedColumns: Set<Int>
 
-    init(sharedStrings: [String]) { self.sharedStrings = sharedStrings }
+    init(sharedStrings: [String], wantedColumns: Set<Int>) {
+        self.sharedStrings = sharedStrings
+        self.wantedColumns = wantedColumns
+    }
 
     func parser(_ parser: XMLParser, didStartElement elementName: String,
                 namespaceURI: String?, qualifiedName qName: String?,
@@ -166,9 +225,10 @@ func processWorkbook(at inputURL: URL) throws -> String {
     guard inputURL.pathExtension.lowercased() == "xlsx" else {
         throw ClaimantError.message("Please drop an .xlsx report onto the app.")
     }
+    let mapping = try ColumnMapping.load()
 
     let fileManager = FileManager.default
-    let temporary = fileManager.temporaryDirectory.appendingPathComponent("MLCClaimants-\(UUID().uuidString)", isDirectory: true)
+    let temporary = fileManager.temporaryDirectory.appendingPathComponent("Claimants-\(UUID().uuidString)", isDirectory: true)
     try fileManager.createDirectory(at: temporary, withIntermediateDirectories: true)
     defer { try? fileManager.removeItem(at: temporary) }
 
@@ -189,12 +249,12 @@ func processWorkbook(at inputURL: URL) throws -> String {
         sharedStrings = sharedParser.strings
     }
 
-    let sheetParser = SheetParser(sharedStrings: sharedStrings)
+    let sheetParser = SheetParser(sharedStrings: sharedStrings,
+                                  wantedColumns: Set(mapping.columns + [mapping.answerColumn]))
     try parseXML(try resolveFirstSheet(in: temporary), delegate: sheetParser)
 
-    let columns = [18, 17, 14, 13]
-    let fallbackHeaders = ["Admin", "Admin P#", "Publisher", "Publisher P#"]
-    let headers = fallbackHeaders
+    let columns = mapping.columns
+    let headers = mapping.headers
 
     var uniqueRows: [[String]] = []
     var seen = Set<[String]>()
@@ -205,7 +265,7 @@ func processWorkbook(at inputURL: URL) throws -> String {
     if lastRow >= 2 {
         for row in 2...lastRow {
             let rowCells = sheetParser.cells[row] ?? [:]
-            var answer = (rowCells[5] ?? "").trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+            var answer = (rowCells[mapping.answerColumn] ?? "").trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
             answer = answer.replacingOccurrences(of: "(", with: "").replacingOccurrences(of: ")", with: "")
             answer = answer.trimmingCharacters(in: .whitespacesAndNewlines)
             if answer.isEmpty { continue }
@@ -218,7 +278,7 @@ func processWorkbook(at inputURL: URL) throws -> String {
     }
 
     guard matched > 0 else {
-        throw ClaimantError.message("No YES, Yes, Y, or (Y) rows were found in column E.")
+        throw ClaimantError.message("No YES, Yes, Y, or (Y) rows were found in column \(mapping.answerLetter).")
     }
 
     let classification = hasNo ? "True Partial" : (unknownRows.isEmpty ? "True Full" : "Needs review")

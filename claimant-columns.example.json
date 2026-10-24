@@ -1,0 +1,9 @@
+{
+  "answerColumn": "E",
+  "fields": [
+    { "header": "Admin", "column": "R" },
+    { "header": "Admin P#", "column": "Q" },
+    { "header": "Publisher", "column": "N" },
+    { "header": "Publisher P#", "column": "M" }
+  ]
+}
